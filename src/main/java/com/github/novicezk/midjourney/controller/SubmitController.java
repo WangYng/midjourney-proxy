@@ -9,6 +9,7 @@ import com.github.novicezk.midjourney.dto.BaseSubmitDTO;
 import com.github.novicezk.midjourney.dto.SubmitBlendDTO;
 import com.github.novicezk.midjourney.dto.SubmitChangeDTO;
 import com.github.novicezk.midjourney.dto.SubmitDescribeDTO;
+import com.github.novicezk.midjourney.dto.SubmitImageDTO;
 import com.github.novicezk.midjourney.dto.SubmitImagineDTO;
 import com.github.novicezk.midjourney.dto.SubmitSimpleChangeDTO;
 import com.github.novicezk.midjourney.enums.TaskAction;
@@ -53,6 +54,22 @@ public class SubmitController {
 	private final TaskStoreService taskStoreService;
 	private final ProxyProperties properties;
 	private final TaskService taskService;
+
+	@ApiOperation(value = "生成图片URL")
+	@PostMapping("/image")
+	public SubmitResultVO image(@RequestBody SubmitImageDTO imageDTO) {
+		Task task = newTask(imageDTO);
+
+		String base64 = imageDTO.getBase64();
+		DataUrl dataUrl;
+		try {
+			IDataUrlSerializer serializer = new DataUrlSerializer();
+			dataUrl = serializer.unserialize(base64);
+		} catch (MalformedURLException e) {
+			return SubmitResultVO.fail(ReturnCode.VALIDATION_ERROR, "base64格式错误");
+		}
+		return this.taskService.submitImage(task, dataUrl);
+	}
 
 	@ApiOperation(value = "提交Imagine任务")
 	@PostMapping("/imagine")
