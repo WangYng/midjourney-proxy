@@ -9,7 +9,6 @@ import com.github.novicezk.midjourney.dto.BaseSubmitDTO;
 import com.github.novicezk.midjourney.dto.SubmitBlendDTO;
 import com.github.novicezk.midjourney.dto.SubmitChangeDTO;
 import com.github.novicezk.midjourney.dto.SubmitDescribeDTO;
-import com.github.novicezk.midjourney.dto.SubmitImageDTO;
 import com.github.novicezk.midjourney.dto.SubmitImagineDTO;
 import com.github.novicezk.midjourney.dto.SubmitSimpleChangeDTO;
 import com.github.novicezk.midjourney.enums.TaskAction;
@@ -54,22 +53,6 @@ public class SubmitController {
 	private final TaskStoreService taskStoreService;
 	private final ProxyProperties properties;
 	private final TaskService taskService;
-
-	@ApiOperation(value = "生成图片URL")
-	@PostMapping("/image")
-	public SubmitResultVO image(@RequestBody SubmitImageDTO imageDTO) {
-		Task task = newTask(imageDTO);
-
-		String base64 = imageDTO.getBase64();
-		DataUrl dataUrl;
-		try {
-			IDataUrlSerializer serializer = new DataUrlSerializer();
-			dataUrl = serializer.unserialize(base64);
-		} catch (MalformedURLException e) {
-			return SubmitResultVO.fail(ReturnCode.VALIDATION_ERROR, "base64格式错误");
-		}
-		return this.taskService.submitImage(task, dataUrl);
-	}
 
 	@ApiOperation(value = "提交Imagine任务")
 	@PostMapping("/imagine")
@@ -151,8 +134,7 @@ public class SubmitController {
 		if (!TaskStatus.SUCCESS.equals(targetTask.getStatus())) {
 			return SubmitResultVO.fail(ReturnCode.VALIDATION_ERROR, "关联任务状态错误");
 		}
-		if (!Set.of(TaskAction.IMAGINE, TaskAction.VARIATION, TaskAction.REROLL, TaskAction.BLEND)
-				.contains(targetTask.getAction())) {
+		if (!Set.of(TaskAction.IMAGINE, TaskAction.VARIATION, TaskAction.REROLL, TaskAction.BLEND).contains(targetTask.getAction())) {
 			return SubmitResultVO.fail(ReturnCode.VALIDATION_ERROR, "关联任务不允许执行变化");
 		}
 		Task task = newTask(changeDTO);
@@ -226,8 +208,7 @@ public class SubmitController {
 		task.setId(System.currentTimeMillis() + "" + RandomUtil.randomNumbers(3));
 		task.setSubmitTime(System.currentTimeMillis());
 		task.setState(base.getState());
-		String notifyHook = CharSequenceUtil.isBlank(base.getNotifyHook()) ? this.properties.getNotifyHook()
-				: base.getNotifyHook();
+		String notifyHook = CharSequenceUtil.isBlank(base.getNotifyHook()) ? this.properties.getNotifyHook() : base.getNotifyHook();
 		task.setProperty(Constants.TASK_PROPERTY_NOTIFY_HOOK, notifyHook);
 		task.setProperty(Constants.TASK_PROPERTY_NONCE, SnowFlake.INSTANCE.nextId());
 		return task;
@@ -241,7 +222,7 @@ public class SubmitController {
         }
 
         String param = "";
-        Matcher paramMatcher = Pattern.compile("(\\x20{1,}-{1,2}.*)*$", Pattern.CASE_INSENSITIVE).matcher(prompt);
+        Matcher paramMatcher = Pattern.compile("\\x20{1,}-{1,2}.*$", Pattern.CASE_INSENSITIVE).matcher(prompt);
         if (paramMatcher.find()) {
             param = paramMatcher.group(0);
         }
