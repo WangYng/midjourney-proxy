@@ -8,10 +8,11 @@ import org.springframework.stereotype.Service;
 import com.github.novicezk.midjourney.Constants;
 import com.github.novicezk.midjourney.ReturnCode;
 import com.github.novicezk.midjourney.enums.BlendDimensions;
+import com.github.novicezk.midjourney.loadbalancer.DiscordInstance;
+import com.github.novicezk.midjourney.loadbalancer.DiscordLoadBalancer;
 import com.github.novicezk.midjourney.result.Message;
 import com.github.novicezk.midjourney.result.SubmitResultVO;
 import com.github.novicezk.midjourney.support.Task;
-import com.github.novicezk.midjourney.support.TaskQueueHelper;
 import com.github.novicezk.midjourney.util.MimeTypeUtils;
 
 import eu.maxschuster.dataurl.DataUrl;
@@ -23,21 +24,23 @@ import lombok.extern.slf4j.Slf4j;
 @RequiredArgsConstructor
 public class TaskServiceImpl implements TaskService {
 	private final TaskStoreService taskStoreService;
-	private final DiscordService discordService;
-	private final TaskQueueHelper taskQueueHelper;
+	private final DiscordLoadBalancer discordLoadBalancer;
 
 	@Override
 	public SubmitResultVO submitImage(Task task, DataUrl dataUrl) {
-
+		DiscordInstance instance = this.discordLoadBalancer.chooseInstance();
+		if (instance == null) {
+			return SubmitResultVO.fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
+		}
 		String taskFileName = task.getId() + "." + MimeTypeUtils.guessFileSuffix(dataUrl.getMimeType());
-		Message<String> uploadResult = this.discordService.upload(taskFileName, dataUrl);
+		Message<String> uploadResult = instance.upload(taskFileName, dataUrl);
 
 		if (uploadResult.getCode() != ReturnCode.SUCCESS) {
 			return SubmitResultVO.fail(ReturnCode.FAILURE, "提交失败，系统异常");
 		}
 
 		String finalFileName = uploadResult.getResult();
-		Message<String> sendImageResult = this.discordService.sendImageMessage("upload image: " + finalFileName,
+		Message<String> sendImageResult = instance.sendImageMessage("upload image: " + finalFileName,
 				finalFileName);
 		if (sendImageResult.getCode() != ReturnCode.SUCCESS) {
 			return SubmitResultVO.fail(ReturnCode.FAILURE, "提交失败，系统异常");
@@ -48,17 +51,21 @@ public class TaskServiceImpl implements TaskService {
 
 	@Override
 	public SubmitResultVO submitImagine(Task task, List<DataUrl> dataUrls) {
-		return this.taskQueueHelper.submitTask(task, () -> {
+		DiscordInstance instance = this.discordLoadBalancer.chooseInstance();
+		if (instance == null) {
+			return SubmitResultVO.fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
+		}
+		task.setProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, instance.getInstanceId());
+		return instance.submitTask(task, () -> {
 			List<String> imageUrls = new ArrayList<>();
 			for (DataUrl dataUrl : dataUrls) {
 				String taskFileName = task.getId() + "." + MimeTypeUtils.guessFileSuffix(dataUrl.getMimeType());
-				Message<String> uploadResult = this.discordService.upload(taskFileName, dataUrl);
+				Message<String> uploadResult = instance.upload(taskFileName, dataUrl);
 				if (uploadResult.getCode() != ReturnCode.SUCCESS) {
 					return Message.of(uploadResult.getCode(), uploadResult.getDescription());
 				}
 				String finalFileName = uploadResult.getResult();
-				Message<String> sendImageResult = this.discordService.sendImageMessage("upload image: " + finalFileName,
-						finalFileName);
+				Message<String> sendImageResult = instance.sendImageMessage("upload image: " + finalFileName, finalFileName);
 				if (sendImageResult.getCode() != ReturnCode.SUCCESS) {
 					return Message.of(sendImageResult.getCode(), sendImageResult.getDescription());
 				}
@@ -70,58 +77,76 @@ public class TaskServiceImpl implements TaskService {
 				task.setDescription("/imagine " + task.getPrompt());
 				this.taskStoreService.save(task);
 			}
-			return this.discordService.imagine(task.getPromptEn(),
-					task.getPropertyGeneric(Constants.TASK_PROPERTY_NONCE));
+			return instance.imagine(task.getPromptEn(), task.getPropertyGeneric(Constants.TASK_PROPERTY_NONCE));
 		});
 	}
 
 	@Override
-	public SubmitResultVO submitUpscale(Task task, String targetMessageId, String targetMessageHash, int index,
-			int messageFlags) {
-		return this.taskQueueHelper.submitTask(task, () -> this.discordService.upscale(targetMessageId, index,
-				targetMessageHash, messageFlags, task.getPropertyGeneric(Constants.TASK_PROPERTY_NONCE)));
+	public SubmitResultVO submitUpscale(Task task, String targetMessageId, String targetMessageHash, int index, int messageFlags) {
+		String instanceId = task.getPropertyGeneric(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID);
+		DiscordInstance discordInstance = this.discordLoadBalancer.getDiscordInstance(instanceId);
+		if (discordInstance == null || !discordInstance.isAlive()) {
+			return SubmitResultVO.fail(ReturnCode.NOT_FOUND, "账号不可用: " + instanceId);
+		}
+		return discordInstance.submitTask(task, () -> discordInstance.upscale(targetMessageId, index, targetMessageHash, messageFlags, task.getPropertyGeneric(Constants.TASK_PROPERTY_NONCE)));
 	}
 
 	@Override
-	public SubmitResultVO submitVariation(Task task, String targetMessageId, String targetMessageHash, int index,
-			int messageFlags) {
-		return this.taskQueueHelper.submitTask(task, () -> this.discordService.variation(targetMessageId, index,
-				targetMessageHash, messageFlags, task.getPropertyGeneric(Constants.TASK_PROPERTY_NONCE)));
+	public SubmitResultVO submitVariation(Task task, String targetMessageId, String targetMessageHash, int index, int messageFlags) {
+		String instanceId = task.getPropertyGeneric(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID);
+		DiscordInstance discordInstance = this.discordLoadBalancer.getDiscordInstance(instanceId);
+		if (discordInstance == null || !discordInstance.isAlive()) {
+			return SubmitResultVO.fail(ReturnCode.NOT_FOUND, "账号不可用: " + instanceId);
+		}
+		return discordInstance.submitTask(task, () -> discordInstance.variation(targetMessageId, index, targetMessageHash, messageFlags, task.getPropertyGeneric(Constants.TASK_PROPERTY_NONCE)));
 	}
 
 	@Override
 	public SubmitResultVO submitReroll(Task task, String targetMessageId, String targetMessageHash, int messageFlags) {
-		return this.taskQueueHelper.submitTask(task, () -> this.discordService.reroll(targetMessageId,
-				targetMessageHash, messageFlags, task.getPropertyGeneric(Constants.TASK_PROPERTY_NONCE)));
+		String instanceId = task.getPropertyGeneric(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID);
+		DiscordInstance discordInstance = this.discordLoadBalancer.getDiscordInstance(instanceId);
+		if (discordInstance == null || !discordInstance.isAlive()) {
+			return SubmitResultVO.fail(ReturnCode.NOT_FOUND, "账号不可用: " + instanceId);
+		}
+		return discordInstance.submitTask(task, () -> discordInstance.reroll(targetMessageId, targetMessageHash, messageFlags, task.getPropertyGeneric(Constants.TASK_PROPERTY_NONCE)));
 	}
 
 	@Override
 	public SubmitResultVO submitDescribe(Task task, DataUrl dataUrl) {
-		return this.taskQueueHelper.submitTask(task, () -> {
+		DiscordInstance discordInstance = this.discordLoadBalancer.chooseInstance();
+		if (discordInstance == null) {
+			return SubmitResultVO.fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
+		}
+		task.setProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, discordInstance.getInstanceId());
+		return discordInstance.submitTask(task, () -> {
 			String taskFileName = task.getId() + "." + MimeTypeUtils.guessFileSuffix(dataUrl.getMimeType());
-			Message<String> uploadResult = this.discordService.upload(taskFileName, dataUrl);
+			Message<String> uploadResult = discordInstance.upload(taskFileName, dataUrl);
 			if (uploadResult.getCode() != ReturnCode.SUCCESS) {
 				return Message.of(uploadResult.getCode(), uploadResult.getDescription());
 			}
 			String finalFileName = uploadResult.getResult();
-			return this.discordService.describe(finalFileName, task.getPropertyGeneric(Constants.TASK_PROPERTY_NONCE));
+			return discordInstance.describe(finalFileName, task.getPropertyGeneric(Constants.TASK_PROPERTY_NONCE));
 		});
 	}
 
 	@Override
 	public SubmitResultVO submitBlend(Task task, List<DataUrl> dataUrls, BlendDimensions dimensions) {
-		return this.taskQueueHelper.submitTask(task, () -> {
+		DiscordInstance discordInstance = this.discordLoadBalancer.chooseInstance();
+		if (discordInstance == null) {
+			return SubmitResultVO.fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
+		}
+		task.setProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, discordInstance.getInstanceId());
+		return discordInstance.submitTask(task, () -> {
 			List<String> finalFileNames = new ArrayList<>();
 			for (DataUrl dataUrl : dataUrls) {
 				String taskFileName = task.getId() + "." + MimeTypeUtils.guessFileSuffix(dataUrl.getMimeType());
-				Message<String> uploadResult = this.discordService.upload(taskFileName, dataUrl);
+				Message<String> uploadResult = discordInstance.upload(taskFileName, dataUrl);
 				if (uploadResult.getCode() != ReturnCode.SUCCESS) {
 					return Message.of(uploadResult.getCode(), uploadResult.getDescription());
 				}
 				finalFileNames.add(uploadResult.getResult());
 			}
-			return this.discordService.blend(finalFileNames, dimensions,
-					task.getPropertyGeneric(Constants.TASK_PROPERTY_NONCE));
+			return discordInstance.blend(finalFileNames, dimensions, task.getPropertyGeneric(Constants.TASK_PROPERTY_NONCE));
 		});
 	}
 
